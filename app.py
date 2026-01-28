@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier, StackingClassifier
@@ -15,84 +15,63 @@ st.write(
     "whether a loan will be approved by combining multiple ML models for better decision making."
 )
 
-# ----------------- Load Dataset -----------------
+# ----------------- Load Dataset (house.csv) -----------------
 @st.cache_data
-def load_data():
+def load_house_data():
     df = pd.read_csv("house.csv")
-    
-    # Create target variable for demo (High price vs Low price)
-    df['price_category'] = (df['price'] > df['price'].median()).astype(int)
-    
-    # Drop unnecessary columns
-    df = df.drop(['id','date','price'], axis=1)
-    
-    # Fill missing values (no inplace to avoid warnings)
-    numerical_features = [
-        'bedrooms','bathrooms','sqft_living','sqft_lot','floors',
-        'waterfront','view','condition','grade','sqft_above',
-        'sqft_basement','yr_built','yr_renovated','lat','long',
-        'sqft_living15','sqft_lot15'
-    ]
-    categorical_features = ['zipcode']
-    
-    for col in numerical_features:
-        df[col] = df[col].fillna(df[col].mean())
-    
-    for col in categorical_features:
-        df[col] = df[col].fillna(df[col].mode()[0])
-    
-    # Encode categorical features
-    le = LabelEncoder()
-    df['zipcode'] = le.fit_transform(df['zipcode'])
-    
-    X = df.drop('price_category', axis=1)
-    y = df['price_category']
-    
-    # Split
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
-    # Scale
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_test = scaler.transform(X_test)
-    
-    return X_train, X_test, y_train, y_test, scaler, X.columns.tolist()
+    return df
 
-X_train, X_test, y_train, y_test, scaler, feature_cols = load_data()
+house_df = load_house_data()
+st.subheader("🏠 House Dataset Preview (Reference Only)")
+st.dataframe(house_df.head())
+st.write(f"Dataset Shape: {house_df.shape}")
 
 # ----------------- Sidebar Inputs -----------------
 st.sidebar.header("Applicant Details")
 
 applicant_income = st.sidebar.number_input("Applicant Income", min_value=0, step=1000)
 coapplicant_income = st.sidebar.number_input("Co-Applicant Income", min_value=0, step=500)
-loan_amount = st.sidebar.number_input("Loan Amount", min_value=0, step=100)
-loan_term = st.sidebar.number_input("Loan Amount Term", min_value=12, step=12)
+loan_amount = st.sidebar.number_input("Loan Amount (in thousands)", min_value=0, step=100)
+loan_term = st.sidebar.number_input("Loan Amount Term (in months)", min_value=12, step=12)
 credit_history = st.sidebar.radio("Credit History", options=["Yes", "No"])
 employment_status = st.sidebar.selectbox("Employment Status", options=["Salaried", "Self-Employed"])
 property_area = st.sidebar.selectbox("Property Area", options=["Urban", "Semi-Urban", "Rural"])
 
-# ----------------- Preprocessing Function -----------------
-def preprocess_input(data, scaler, feature_cols):
-    df = pd.DataFrame([data])
-    
-    # Encode categorical variables
-    df['Credit_History'] = df['Credit_History'].map({'Yes': 1, 'No': 0})
-    df['Employment_Status'] = df['Employment_Status'].map({'Salaried': 1, 'Self-Employed': 0})
-    area_mapping = {"Urban": 2, "Semi-Urban": 1, "Rural": 0}
-    df['Property_Area'] = df['Property_Area'].map(area_mapping)
-    
-    # Scale numeric features
-    numeric_cols = ['Applicant_Income','Coapplicant_Income','Loan_Amount','Loan_Amount_Term']
-    df[numeric_cols] = scaler.transform(df[numeric_cols])
-    
-    # Make sure columns order matches training
-    df = df[feature_cols]
+# ----------------- Create Mock Loan Dataset -----------------
+@st.cache_data
+def create_loan_dataset(n_samples=500):
+    np.random.seed(42)
+    df = pd.DataFrame({
+        "Applicant_Income": np.random.randint(2000, 15000, n_samples),
+        "Coapplicant_Income": np.random.randint(0, 8000, n_samples),
+        "Loan_Amount": np.random.randint(50, 600, n_samples),
+        "Loan_Amount_Term": np.random.choice([120, 180, 240, 360], n_samples),
+        "Credit_History": np.random.choice([0, 1], n_samples, p=[0.3, 0.7]),
+        "Employment_Status": np.random.choice([0, 1], n_samples, p=[0.3, 0.7]),
+        "Property_Area": np.random.choice([0, 1, 2], n_samples),  # 0=Rural,1=Semi-Urban,2=Urban
+    })
+    # Target: Loan Approved (1) / Rejected (0)
+    df['Loan_Status'] = (
+        (df['Applicant_Income'] + df['Coapplicant_Income'] > 5000) &
+        (df['Credit_History'] == 1)
+    ).astype(int)
     return df
 
-# ----------------- Stacking Model -----------------
+loan_df = create_loan_dataset()
+
+# ----------------- Train Stacking Model -----------------
+X = loan_df.drop("Loan_Status", axis=1)
+y = loan_df["Loan_Status"]
+
+# Scale all features (numeric + categorical)
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+
 base_models = [
     ('lr', LogisticRegression(max_iter=1000)),
-    ('dt', DecisionTreeClassifier(max_depth=6)),
+    ('dt', DecisionTreeClassifier(max_depth=5)),
     ('rf', RandomForestClassifier(n_estimators=100, random_state=42))
 ]
 meta_model = LogisticRegression(max_iter=1000)
@@ -103,11 +82,9 @@ stacking_clf = StackingClassifier(
     cv=5,
     passthrough=False
 )
-
-# ----------------- Train Stacking -----------------
 stacking_clf.fit(X_train, y_train)
 
-# ----------------- Model Architecture Display -----------------
+# ----------------- Model Architecture -----------------
 st.subheader("🔹 Stacking Model Architecture")
 st.write("Base Models Used:")
 st.write("- Logistic Regression")
@@ -116,23 +93,38 @@ st.write("- Random Forest")
 st.write("Meta Model Used:")
 st.write("- Logistic Regression")
 
+# ----------------- Input Preprocessing -----------------
+def preprocess_input(data):
+    df = pd.DataFrame([data])
+    
+    # Encode categorical inputs
+    df['Credit_History'] = df['Credit_History'].map({'Yes': 1, 'No': 0})
+    df['Employment_Status'] = df['Employment_Status'].map({'Salaried': 1, 'Self-Employed': 0})
+    df['Property_Area'] = df['Property_Area'].map({"Urban": 2, "Semi-Urban": 1, "Rural": 0})
+    
+    # Scale ALL features together (numeric + encoded categorical)
+    df_scaled = scaler.transform(df)
+    df_scaled = pd.DataFrame(df_scaled, columns=df.columns)
+    
+    return df_scaled
+
 # ----------------- Prediction -----------------
 if st.button("🔘 Check Loan Eligibility (Stacking Model)"):
     input_data = {
-        'Applicant_Income': applicant_income,
-        'Coapplicant_Income': coapplicant_income,
-        'Loan_Amount': loan_amount,
-        'Loan_Amount_Term': loan_term,
-        'Credit_History': credit_history,
-        'Employment_Status': employment_status,
-        'Property_Area': property_area
+        "Applicant_Income": applicant_income,
+        "Coapplicant_Income": coapplicant_income,
+        "Loan_Amount": loan_amount,
+        "Loan_Amount_Term": loan_term,
+        "Credit_History": credit_history,
+        "Employment_Status": employment_status,
+        "Property_Area": property_area
     }
     
-    processed_data = preprocess_input(input_data, scaler, feature_cols)
+    processed_data = preprocess_input(input_data)
     
-    # Base model predictions
+    # Base model predictions from fitted stacking classifier
     base_preds = {}
-    for name, model in base_models:
+    for name, model in stacking_clf.named_estimators_.items():
         pred = model.predict(processed_data)[0]
         base_preds[name] = "Approved" if pred == 1 else "Rejected"
     
@@ -154,7 +146,7 @@ if st.button("🔘 Check Loan Eligibility (Stacking Model)"):
         conf_score = stacking_clf.predict_proba(processed_data)[0][final_pred]*100
         st.write(f"📈 Confidence Score: {conf_score:.2f}%")
     
-    # Business Explanation
+    # Business explanation
     st.subheader("💡 Business Explanation")
     explanation = (
         "Based on income, credit history, employment status, property area, and combined predictions "
